@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Install global skills to ~/.claude/skills/
-# Run once per machine after cloning to ~/agent-scaffold/
+# Run once per machine after cloning to ~/projects/personal/agent-scaffold/
 
 set -e
 

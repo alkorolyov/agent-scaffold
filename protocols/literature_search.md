@@ -238,6 +238,44 @@ After writing each entry:
 
 ---
 
+## Phase 6 — Scaling up: when to delegate to subagents
+
+For runs of >5 papers in a single session, batch entry-writing eats main-context fast — each PDF text sidecar is 2–10K lines, and reading 14 of them in series consumes tens of thousands of tokens that never get reused. Delegate Phase 3 to subagents instead.
+
+### Phase split for delegated runs
+
+| Phase | Where | Why |
+|---|---|---|
+| **Phase 1** (search + verify DOIs) | Main agent | Cross-paper context useful for de-dup + relevance scoring; needs project's `## Knowledge Base` topics in scope |
+| **Phase 2** (fetch) | Bash, no agent | `/fetch-paper` + `curl` for arXiv; pure I/O |
+| **Phase 3** (write entries) | One subagent per paper | Mechanically uniform per protocol; max parallelism; framework-level isolation enforces single-source rule (subagent literally can't see other papers); failure stays scoped to one agent |
+| **Phase 4** (verify) | Main agent | Spot-check 3 specific claims per entry against `raw/<slug>*`; decide which to flag |
+| **Cross-refs** | Main agent, final pass | Subagents can't see the full KB; main agent adds `(cross-ref: <slug>)` tags after all entries land |
+
+### Phase 3 subagent prompt structure
+
+Launch one subagent per paper, in parallel batches (multiple Agent calls in a single message). Each subagent must receive:
+
+1. **The protocol itself** — link or inline `protocols/literature_search.md` Phase 3.
+2. **Per-paper assignment** — DOI, slug, raw file path, file_type from Phase 2.
+3. **Project relevance topics** — from project CLAUDE.md `## Knowledge Base` section, so Relevance/Takeaway sections can be project-specific.
+4. **Strict no-extrapolation reminder**: *"If a claim isn't in the source, omit it. Do not write 'likely', 'commonly', or 'typically' to fill gaps. Better a missing section than a plausible default."*
+5. **Cross-ref instruction**: *"Do NOT add `(cross-ref: <slug>)` tags. The main agent adds those in a final pass once all entries land."*
+6. **Output expectation**: subagent writes the entry directly to `docs/kb/literature/<slug>.md` with the Write tool, then returns a brief confirmation only — NOT the entry content. Format: *"Wrote <slug>.md (NN lines). Top-3 quantitative claims sourced to: claim 1 → p. X; claim 2 → p. Y; claim 3 → p. Z."* This keeps main-thread context clean — entries can be read during Phase 4 instead of duplicated through tool results.
+
+### When NOT to delegate
+
+- ≤3 papers: faster to do in main thread; subagent overhead exceeds savings.
+- `regen-from-raw` mode (Phase 0c): often a single-paper fix; main agent handles directly.
+- `rewrite-named` mode (Phase 0d): user-driven, single paper; main agent handles directly.
+- When entries depend on heavy cross-paper analysis (rare — the protocol normally forbids cross-paper claims without explicit `(cross-ref: <slug>)` tags).
+
+### Quality bar still applies
+
+Phase 4 verification is non-negotiable for delegated runs — subagents are the most likely source of plausible-sounding but unsourced content. Spot-check the 3 most-quantitative claims per entry against `raw/<slug>*` before considering Phase 3 complete.
+
+---
+
 ## Entry Quality Checklist
 
 - [ ] `file_type` matches disk AND respects the stub rule

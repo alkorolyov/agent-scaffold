@@ -4,6 +4,7 @@
 import sys
 import json
 import re
+import subprocess
 from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
@@ -214,6 +215,30 @@ def fetch_from_crossref(doi: str) -> dict:
         return {"error": str(e), "doi": doi}
 
 
+def extract_text_sidecar(pdf_path: Path) -> Optional[str]:
+    """Best-effort plain-text sidecar via `pdftotext -layout`.
+
+    Writes <pdf_path without .pdf>.txt. Silent on failure (missing pdftotext binary,
+    encrypted/scanned PDF, timeout). The sidecar exists so grep can reach into full text
+    without re-parsing the PDF on every query — never a hard requirement.
+    """
+    txt_path = Path(str(pdf_path).removesuffix(".pdf") + ".txt")
+    try:
+        subprocess.run(
+            ["pdftotext", "-layout", str(pdf_path), str(txt_path)],
+            check=True, capture_output=True, timeout=30,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+        if txt_path.exists():
+            txt_path.unlink()
+        return None
+    if txt_path.exists() and txt_path.stat().st_size > 100:
+        return str(txt_path)
+    if txt_path.exists():
+        txt_path.unlink()
+    return None
+
+
 def save_pdf(content: bytes, output_path: Path) -> dict:
     """Save PDF, rejecting non-PDF bytes (e.g. Cloudflare block pages)."""
     if not content.startswith(b"%PDF"):
@@ -226,11 +251,13 @@ def save_pdf(content: bytes, output_path: Path) -> dict:
     if not str(output_path).endswith(".pdf"):
         output_path = Path(str(output_path) + ".pdf")
     output_path.write_bytes(content)
+    txt_path = extract_text_sidecar(output_path)
     return {
         "success": True,
         "file_path": str(output_path),
         "file_type": "pdf",
         "size_mb": len(content) / (1024 * 1024),
+        "text_sidecar": txt_path,
     }
 
 
