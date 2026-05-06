@@ -53,6 +53,30 @@ Claude Code loads CLAUDE.md files at three levels, from broadest to most specifi
 - Project CLAUDE.md is also **never committed** (contains AI-specific context)
 - Keep each level focused — don't repeat global rules in project CLAUDE.md
 
+### Scaffold rules: enforcement vs rationale split
+
+The scaffold ships **two** rule files. Keeping them separate is load-bearing:
+
+| File | Role | When loaded |
+|------|------|-------------|
+| `~/agent-scaffold/rules.md` | **Enforcement.** Tight (~50 lines), declarative, hot-loaded into every project session. Per-exp / progress / findings / INDEX discipline, hard rules, read-time defenses, size caps. | Every session in `~/projects/` |
+| `~/agent-scaffold/design.md` | **Rationale.** This file. Long-form (1800+ lines), explains *why* each rule exists, prior art, scaling thresholds, templates. | On-demand only (when an agent or human goes looking) |
+
+**Wire-up** (do this once per machine when adopting the scaffold):
+
+1. Place `rules.md` and `design.md` at `~/agent-scaffold/`.
+2. Add the `@-import` to `~/projects/CLAUDE.md` (NOT to `~/.claude/CLAUDE.md`):
+
+   ```markdown
+   ## Agent-Scaffold Rules
+
+   @~/agent-scaffold/rules.md
+   ```
+
+3. **Why scoped to `~/projects/CLAUDE.md` and not the global `~/.claude/CLAUDE.md`**: the rules only apply to projects that follow the scaffold layout (`docs/experiments/`, `docs/progress.md`, `tools/rec.py`, etc.). Sessions outside `~/projects/` (system admin, dotfile work, ad-hoc scripts) don't need them and shouldn't pay the token cost.
+
+**Why this matters**: prior to the split, the rules lived only in `design.md` — archival, never auto-loaded. Agents would silently violate them (e.g. putting forward-looking "v2 plan" sections inside a per-exp file) because no rule reached working context. The fix is structural: enforcement-grade rules must be in a hot-loaded file; rationale stays archival. When updating either, update the other in the same change to keep them in sync.
+
 ### Auto-Memory vs CLAUDE.md vs docs/
 
 Claude Code also maintains **auto-memory** at `.claude/projects/*/memory/MEMORY.md` — a persistent scratchpad that survives across conversations. Use each layer for its intended purpose:
@@ -123,7 +147,11 @@ project-name/
 │       └── snapshot/SKILL.md            # /snapshot arch|schema|api
 ├── logs/                                # Training framework logs (TensorBoard, CSVLogger)
 ├── notebooks/                           # Polished, presentable notebooks (numbered)
-├── scripts/                             # Experiment scripts (exp_*.py, untracked)
+├── scripts/                             # Production CLIs (preprocessing, training, deployment) — tracked
+├── experiments/                         # Per-experiment code — tracked
+│   ├── exp_NN_<slug>.py                 # DEFAULT: single file per experiment
+│   └── exp_NN_<slug>/                   # EXCEPTION: subdir when multi-file is unavoidable
+├── reports/                             # Deliverable artifacts (slides, decks, formatted CSVs) — tracked
 ├── tests/                               # Pytest test suite
 │   ├── conftest.py
 │   └── test_{module}.py
@@ -142,9 +170,11 @@ project-name/
 
 ### Key Principles
 
-- **`scripts/` is the lab bench**: Rapid, disposable experiment scripts. Untracked in git. Thin wrappers that call `src/` library functions — never duplicate logic in scripts.
-- **`notebooks/` is the presentation layer**: Polished, numbered, tracked. Only created after an experiment is validated.
-- **`src/` is the reusable library**: Stable, tested code that scripts and notebooks import from. If a function is missing, add it to `src/` first, then import in scripts.
+- **`src/` is the reusable library**: Stable, importable code. Functions/classes that take args and return values, no I/O orchestration. Tracked. If a function is missing, add it here first; do not duplicate logic in `scripts/` or `experiments/`.
+- **`scripts/` is the production CLI**: End-to-end runnable tools that are rerun on a schedule or by 2+ experiments — preprocessing, training entry points, deployment, retrains. Tracked. Thin wrappers that import from `src/`.
+- **`experiments/` is the lab bench**: Per-experiment code that tests one hypothesis. Tracked. Default: a single `experiments/exp_NN_<slug>.py`. A subdirectory is the exception, not the rule (see "Single-file experiment rule" below).
+- **`reports/` is the presentation layer**: Slides, decks, formatted deliverables. Tracked. Lives outside `experiments/` because deliverables are downstream of the result, not part of the experiment itself.
+- **`notebooks/` is the polish stage**: Polished, numbered notebooks. Tracked. Created after a result is validated, for narrative communication.
 - **`tests/` validates the library**: Pytest suite with markers for slow/integration tests. Fast tests run by default.
 - **`docs/` is the AI memory**: Detailed context docs that keep the AI assistant effective across sessions. Untracked. Layered for scale:
   - `docs/experiments/exp_NN_*.md` — one file per experiment (frontmatter-driven, ≤150 lines each). `INDEX.md` is **generated**, never hand-edited.
@@ -174,9 +204,47 @@ data/results/
   └── 21_feature_importance.pkl
 ```
 
+### Code Layout Philosophy
+
+Code lives in three places, separated by lifecycle (not by topic). The separation is what creates pressure to promote reusable logic out of one-off scripts.
+
+| Tier | Goes in | Test for it | Lifecycle |
+|---|---|---|---|
+| Library | `src/<package>/` | "Does another file `import` this?" | Long-lived, versioned, tested. |
+| Production CLI | `scripts/` | "Do I run it with `python scripts/foo.py …`?" | Long-lived, rerun on schedule or by 2+ exps. |
+| Experiment | `experiments/exp_NN_<slug>.py` | "Will I run this again next month?" | One-off. Closed when the exp is done. |
+
+**Promotion heuristic**:
+
+- A **function** imported by 2+ files → `src/<package>/`. Promote when the second use appears, not the first (avoid speculative library code).
+- A **CLI / orchestrator** rerun on schedule, or used by 2+ exps → `scripts/`.
+- When you find yourself **copy-pasting a `.py`** between exp dirs, that's the signal to promote — not "should I clean this up later?". Do it now.
+
+**Single-file experiment rule**:
+
+An experiment is a singular hypothesis trial, not a mini-project. Default to one file: `experiments/exp_NN_<slug>.py`. A multi-file subdir is a smell — usually 1 file is the experiment and the rest are:
+
+| Smell | Where it really belongs |
+|---|---|
+| Featurization, model loading, metric computation | `src/<package>/` (library) |
+| "Aggregate the predictions into a wide CSV" | `scripts/` or `tools/` (rerunnable post-processing) |
+| Plotting helpers | `src/<package>/viz/` |
+| Slide / deck / report builders | `reports/` |
+| Manual deliverable formatters (one-off CSV templates) | `scripts/reporting/` or accept as one-off |
+
+A subdirectory is permitted only when (a) the exp genuinely has multiple stages with intermediate state too coupled to split, AND (b) the rationale is documented in the exp doc's Method section. Otherwise: split out the reusable parts and keep the experiment in one file.
+
+**Why this hurts to follow but is worth it**: promoting code on the second use feels like premature refactoring; it is not. The alternative is 5 exps each with a slightly-different `compute_metrics.py`, which is unrecoverable a year later. The single-file rule creates the friction that forces the right thing.
+
+**Counter-pressure (when subdir is genuinely OK)**:
+
+- Time-pressured deliverables (24h client turnaround, demo deadlines) — accept the smell, plan the cleanup as a follow-up task in `progress.md`.
+- Truly multi-stage exps with tightly-coupled intermediate artifacts (rare in ML; usually pickled intermediates suffice).
+- Educational / demo repos where colocation aids reading.
+
 ### Workflow
 
-1. **Experiment**: Create `scripts/exp_{NN}_{description}.py` → run → write `docs/experiments/exp_{NN}_{description}.md` (frontmatter + spec + result) → run `tools/render_index.py` to regenerate `docs/experiments/INDEX.md`. Status lives in the per-exp frontmatter — `progress.md` only carries active sprint planning, not the experiment table.
+1. **Experiment**: Create `experiments/exp_{NN}_{description}.py` (single file by default) → run, redirecting stdout to `data/experiments/exp_{NN}_{description}/run.log` → write `docs/experiments/exp_{NN}_{description}.md` (frontmatter + spec + result) → run `tools/render_index.py` to regenerate `docs/experiments/INDEX.md`. Status lives in the per-exp frontmatter — `progress.md` only carries active sprint planning, not the experiment table.
 2. **Notebook**: Once validated, create polished notebook in `notebooks/`
 3. **Report**: If the result changes understanding, append a one-liner to `docs/findings.md`. CLAUDE.md only links to `findings.md` — never list findings directly there.
 4. **Archive**: When `progress.md` exceeds ~200 lines, move completed sprints to `docs/archive/progress_{YYYY-QN}.md`.
@@ -203,7 +271,6 @@ markers = [
 ```gitignore
 # === Working directories (untracked) ===
 docs/                    # AI-context documentation
-scripts/                 # Experiment scripts (disposable)
 
 # === Data & outputs ===
 data/                    # All data (raw, processed, experiments, models)
@@ -229,10 +296,13 @@ build/
 
 | Tracked (committed) | Untracked (gitignored) | Never staged, never .gitignored |
 |---------------------|----------------------|---------------------------------|
-| `src/` (package code) | `scripts/` (experiment scripts) | `CLAUDE.md`, `.claude/` |
-| `notebooks/` (polished notebooks) | `docs/` (AI context docs) | `.mcp.json`, `.cursor/`, `.copilot/` |
-| `environment.yml` | `data/` (all data + outputs) | |
-| `pyproject.toml` | `*.log`, `*.db` | |
+| `src/` (library code) | `docs/` (AI context docs) | `CLAUDE.md`, `.claude/` |
+| `scripts/` (production CLIs) | `data/` (all data + outputs) | `.mcp.json`, `.cursor/`, `.copilot/` |
+| `experiments/` (per-exp code) | `*.log`, `*.db` | |
+| `reports/` (slides, deliverables) | | |
+| `notebooks/` (polished notebooks) | | |
+| `tests/` | | |
+| `environment.yml`, `pyproject.toml` | | |
 | `tests/` | | |
 
 **Why AI tool files are neither committed nor gitignored**: listing `.claude/` or `CLAUDE.md` in `.gitignore` is itself a committed signal that you use a specific AI tool — it exposes tooling choices to anyone who clones the repo. The low-profile rule: never stage them, never mention them in committed files. Use `.git/info/exclude` locally if you want the noise suppressed in `git status`.
@@ -253,6 +323,25 @@ This file provides guidance to Claude Code when working with code in this reposi
 ## IMPORTANT
 
 {Critical rules: no AI traces in code/commits, don't add CLAUDE.md to git, etc.}
+
+---
+
+## Agent-scaffold project
+
+This project follows the [agent-scaffold](~/projects/personal/agent-scaffold/design.md) conventions. Layout, indexes, skills and rules are emitted by:
+
+```
+python tools/rec.py info
+```
+
+Run that before any work involving experiment / ADR records. Read what it prints **once per session** — those are the load-bearing rules. Layout (path of `docs/experiments/`, `docs/adrs/`, etc.) is owned by `rec.py`; never hardcode paths in this file.
+
+Hard rules (also printed by `rec.py info`):
+
+- NEVER hand-author files matching `exp_*.md` or `adr_*.md`. Use `tools/rec.py exp new <slug>` / `tools/rec.py adr new <slug>` (or the `/log-exp` / `/log-adr` skills) so frontmatter is correct and `INDEX.md` regenerates.
+- INDEX.md takeaways are summaries — re-read the underlying `data/experiments/exp_NN_*/` artifacts before propagating any conclusion.
+- Infrastructure runs (fleet tests, smoke tests, platform benchmarks) use `outcome: infra`.
+- Per-exp / per-ADR files contain results/decisions of THAT entry only — never forward-looking plans, action items, "v2 next", or roadmap content. Forward-looking work goes to `docs/progress.md`. A multi-intervention sprint is multiple exp numbers (each with its own file), not one file with versions/phases.
 
 ---
 
@@ -659,6 +748,10 @@ Run after every experiment, or hook into a git pre-commit / Claude Code Stop hoo
 
 The AI should never hand-edit record frontmatter directly. Every status / metric / takeaway / lineage update goes through this CLI. Output is short and structured — token-cheap. The CLI enforces schema invariants so drift becomes impossible.
 
+**When to scaffold (`rec.py exp new <slug>`)**: only after design is locked — methodology, scope, grid, success criteria all agreed in chat. The slug becomes effectively immutable once the file + data dir exist (rename touches the doc, the data tree, INDEX, lineage links, any in-flight log paths). A premature `rec.py exp new` during the proposal stage will lock in a name that no longer matches the experiment by the time it actually runs — exactly the failure mode we hit on `paste_coords_e2e_validation` (originally framed as "confirm exp_03 win at e2e", actually became "n_workers throughput sweep + production parameter tuning"). Signal that scaffolding is safe: user said "go" / "yes" with no further design questions outstanding.
+
+**Slug naming convention**: prefer **method/deliverable-anchored slugs** (`n_workers_scaling_sweep`, `tune_n_workers_postrefactor`, `eval_throughput_characterization`) over **hypothesis-anchored slugs** (`paste_coords_e2e_validation`, `gnn_beats_lgbm_test`). When scope shifts during execution — and it does, often — method-anchored names stay accurate and continue to describe what the artifacts contain. Hypothesis-anchored names become misleading: an exp called `validate_X` that ends up measuring Y poisons the index, search, and downstream readers' mental model.
+
 Subcommand structure: `rec.py <kind> <verb>`. Current kinds: `exp`, `adr`. Adding a new kind (e.g. `feat`) costs one new block — zero changes to existing code.
 
 ```bash
@@ -835,6 +928,8 @@ produces:
 - **No name collisions**: previously `exp_28_out.log` and a different project's `exp_28_out.log` would clash if shared via rsync. Now logs are namespaced by their experiment dir.
 - **Resumable**: convention `run.log`, `run_resume_2.log`, etc. — all in the same dir.
 - **gitignored cleanly**: `data/` is already gitignored; logs need no separate rule.
+
+**`/tmp/` is also wrong** — not just project root. Failure mode: agent backgrounds a bench script with `> /tmp/foo.log 2>&1 &` out of shell habit (the `/tmp/` default is reflexive when redirecting), and the artifact is gone after reboot, untracked, and not co-located with the data it describes. The `rules.md` Hard rule is phrased as a negative tripwire — "NEVER /tmp/" — because positive guidance ("logs go in the exp dir") reads as advice; agents skim past advice but stop on prohibitions. The rule applies regardless of duration: an 88 s microbench produces an exp artifact just like an 8 h training run.
 
 **Naming inside the dir**:
 
@@ -1575,6 +1670,7 @@ When invoked:
 | Model checkpoints | `data/models/{description}.pt` | `lgbm_baseline_v2.txt` |
 | Experiment logs | `data/experiments/exp{NN}_{slug}/run.log` | `data/experiments/exp28_lgbm_screening/run.log` |
 | Optuna databases | `data/experiments/exp{NN}_{slug}/optuna.db` | `data/experiments/exp35_lgbm_epitope/optuna.db` |
+| Presentation outputs | `data/presentations/{YYYY-MM-DD}_{topic}/` | `2026-05-08_friday_report/` |
 
 - Experiment number is the universal ID linking scripts → outputs → logs → docs
 - Numbers are sequential and never reused
