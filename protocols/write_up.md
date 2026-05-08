@@ -50,6 +50,19 @@ Write-up draws across all three tiers in `protocols/memory_tiers.md`:
 
 Write-up is the one moment the agent loads archival content systematically — and the one moment fabricated drift becomes user-visible. Treat it as the verification gate.
 
+## Slides / pptx (two-step)
+
+Presentation drafts (Friday reports, internal decks, status reviews) use a two-step pipeline so the write-up protocol applies cleanly to the markdown step:
+
+1. **Draft `slides.md`** — markdown source under `data/presentations/<YYYY-MM-DD>_<topic-or-audience>/`. Apply the protocol above: re-read source artifacts, verify every metric against the data dir, flag drift, cite exp numbers explicitly. The user selects scope and audience — do not infer.
+2. **Render `<topic>.pptx`** — mechanical conversion from `slides.md` (e.g. `python-pptx`, pandoc). No new content introduced at this step. The pptx is regenerable; the markdown is the only source of truth worth diffing.
+
+**Untracked**: the presentations dir is AI-context (like `docs/`). Do not stage `slides.md` or `.pptx` to git.
+
+**Figures**: source from `data/experiments/exp_NN_*/plots/` (or wherever the exp wrote them). Stage copies into the presentation dir if the slide layout requires resizing/cropping — do not edit exp plots in place.
+
+<!-- Project-specific slide format conventions (slide breaks, sizing, section template, audience tone) belong here or in the project's CLAUDE.md. -->
+
 ## What this protocol does NOT do
 
 - It does not generate Confluence/Jira/Slack posts directly. Drafts go to the user for review first.

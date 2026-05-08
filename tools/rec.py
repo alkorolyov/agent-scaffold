@@ -66,6 +66,58 @@ def _render() -> None:
         subprocess.run([sys.executable, str(render)], check=False)
 
 
+# ── info ──────────────────────────────────────────────────────────────────────
+
+def _rel(p: Path) -> str:
+    try:
+        return str(p.relative_to(ROOT))
+    except ValueError:
+        return str(p)
+
+
+def info(_args=None):
+    """Print project layout and agent-scaffold conventions.
+
+    Single source of truth for an agent-scaffold project's directory layout.
+    Anything that wants to know "where do experiments live?" should call this
+    instead of hardcoding paths. Layout changes happen in this file's
+    constants (EXP_DIR, ADR_DIR, FINDINGS) — every consumer follows.
+    """
+    skills_dir = ROOT / "skills"
+    skill_names = sorted(p.parent.name for p in skills_dir.glob("*/SKILL.md")) \
+        if skills_dir.exists() else []
+
+    lines = [
+        f"agent-scaffold project at {ROOT}",
+        "",
+        "Records:",
+        f"  experiments → {_rel(EXP_DIR)}/   (rec.py exp new <slug>)",
+        f"  ADRs        → {_rel(ADR_DIR)}/   (rec.py adr new <slug>)",
+        f"  findings    → {_rel(FINDINGS)}",
+        "",
+        "Indexes (recall tier — load on session start):",
+        f"  {_rel(EXP_DIR / 'INDEX.md')}",
+        f"  {_rel(ADR_DIR / 'INDEX.md')}",
+        "",
+    ]
+    if skill_names:
+        lines.append("Project skills:")
+        for s in skill_names:
+            lines.append(f"  /{s}")
+        lines.append("")
+    lines.extend([
+        "Rules:",
+        "  - NEVER hand-author exp_*.md or adr_*.md. Use rec.py; INDEX.md is generated.",
+        "  - Treat INDEX.md takeaways as summaries — re-read source artifacts in",
+        "    data/experiments/exp_NN_*/ before propagating any conclusion.",
+        "  - Use outcome='infra' for infrastructure runs (fleet tests, smoke tests,",
+        "    benchmarks of the platform itself).",
+        "",
+        "Reference: ~/projects/personal/agent-scaffold/design.md",
+    ])
+    print("\n".join(lines))
+
+
 # ── exp commands ──────────────────────────────────────────────────────────────
 
 EXP_OUTCOMES = {"confirmed", "refuted", "improved", "parity", "regression", "infra", "inconclusive"}
@@ -440,7 +492,13 @@ def main():
     s = adr_sub.add_parser("show"); s.add_argument("n", type=int)
     s = adr_sub.add_parser("list"); s.add_argument("--status")
 
+    # info — print layout + conventions; no subcommand
+    kind_sub.add_parser("info", help="Print project layout and agent-scaffold conventions")
+
     args = p.parse_args()
+    if args.kind == "info":
+        info(args)
+        return
     {
         ("exp", "new"): exp_new,
         ("exp", "update"): exp_update,
