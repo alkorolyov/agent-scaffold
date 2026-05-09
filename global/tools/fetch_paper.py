@@ -7,7 +7,7 @@ import re
 import subprocess
 from pathlib import Path
 from typing import Optional
-from urllib.parse import quote
+from urllib.parse import quote, urljoin
 
 try:
     import requests
@@ -55,14 +55,15 @@ def fetch_from_scihub(doi: str) -> Optional[bytes]:
     session = create_session()
     sci_hub_urls = [
         "https://sci-hub.pl",
-        "https://sci-hub.se",
+        "https://sci-hub.ru",
         "https://sci-hub.st",
+        "https://sci-hub.se",
     ]
 
     for base_url in sci_hub_urls:
         try:
             url = f"{base_url}/{doi}"
-            resp = session.get(url, timeout=10)
+            resp = session.get(url, timeout=10, allow_redirects=True)
             resp.raise_for_status()
 
             # Check if we got a PDF or error page
@@ -72,18 +73,28 @@ def fetch_from_scihub(doi: str) -> Optional[bytes]:
             # Try to extract PDF URL from HTML
             if "pdf" in resp.text.lower():
                 # Look for iframe, embed, or href pointing to PDF
-                pdf_match = re.search(r'<iframe[^>]*src\s*=\s*["\']([^"\']*)["\']', resp.text)
+                pdf_match = re.search(r'<iframe[^>]*src\s*=\s*["\']([^"\']+)["\']', resp.text)
                 if not pdf_match:
                     pdf_match = re.search(r'src\s*=\s*["\']([^"\']*\.pdf[^"\']*)["\']', resp.text)
                 if not pdf_match:
                     pdf_match = re.search(r'href\s*=\s*["\']([^"\']*\.pdf[^"\']*)["\']', resp.text)
 
                 if pdf_match:
-                    pdf_url = pdf_match.group(1)
-                    if not pdf_url.startswith("http"):
-                        pdf_url = base_url + pdf_url
-                    pdf_resp = session.get(pdf_url, timeout=10)
-                    if pdf_resp.headers.get("content-type", "").startswith("application/pdf"):
+                    pdf_path = pdf_match.group(1)
+                    # Resolve relative paths against the FINAL redirect URL, not the
+                    # original base. Sci-Hub mirrors increasingly redirect to a different
+                    # host (e.g. sci-hub.pl -> sci-net.xyz) which serves the PDF from
+                    # /storage/<hash>/...pdf — using the original base 404s.
+                    if pdf_path.startswith("//"):
+                        pdf_url = "https:" + pdf_path
+                    elif pdf_path.startswith("http"):
+                        pdf_url = pdf_path
+                    else:
+                        pdf_url = urljoin(resp.url, pdf_path)
+                    pdf_resp = session.get(pdf_url, timeout=15, allow_redirects=True,
+                                            headers={"Referer": resp.url})
+                    ct = pdf_resp.headers.get("content-type", "")
+                    if ct.startswith("application/pdf") or pdf_resp.content[:4] == b"%PDF":
                         return pdf_resp.content
         except Exception:
             continue
